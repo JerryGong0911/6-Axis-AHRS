@@ -10,9 +10,15 @@ namespace fusion {
 // Constants
 inline constexpr float kPi = 3.14159265358979323846f;
 
+// [New] Constants for Gain Ramping
+inline constexpr float kInitialGain = 10.0f;          // High gain during initialization
+inline constexpr float kInitializationPeriod = 3.0f;  // Period in seconds to ramp down
+
 // -------------------------------------------------------
 // Mathematical Types (with operator overloads)
 // -------------------------------------------------------
+// ... (此部分代码保持不变, omitted for brevity) ...
+// ... (Vector, Quaternion, Euler, Convention definitions match your original file) ...
 
 struct Vector {
     float x = 0.0f, y = 0.0f, z = 0.0f;
@@ -94,14 +100,10 @@ struct Quaternion {
     }
 };
 
-// -------------------------------------------------------
-
 struct Euler {
     float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;
     [[nodiscard]] static constexpr Euler zero() noexcept { return {}; }
 };
-
-// -------------------------------------------------------
 
 enum class Convention {
     nwu,  // North-West-Up
@@ -157,6 +159,9 @@ public:
         float acceleration_error_deg = 0.0f;
         bool accelerometer_ignored = false;
         float recovery_ratio = 0.0f;
+        // [New] Expose gain state for debugging if needed
+        float current_gain = 0.0f; 
+        bool is_initialising = false;
     };
 
     struct Flags {
@@ -190,7 +195,8 @@ public:
 private:
     [[nodiscard]] Vector half_gravity() const noexcept;
     [[nodiscard]] static Vector feedback(const Vector& sensor, const Vector& reference) noexcept;
-    void madgwick_update_imu(float gx, float gy, float gz, float ax, float ay, float az) noexcept;
+    // [Modified] Added delta_time parameter to update function
+    void madgwick_update_imu(float gx, float gy, float gz, float ax, float ay, float az, float dt) noexcept;
 
     Quaternion quaternion_ = Quaternion::identity();
     Vector accelerometer_ = Vector::zero();
@@ -201,11 +207,16 @@ private:
     int acceleration_recovery_timeout_ = 0;
     Settings settings_;
 
+    // [New] Variables for Gain Ramping
+    float ramped_gain_ = kInitialGain;
+    float ramped_gain_step_ = 0.0f;
+    bool is_initialising_ = true;
+
     struct MadgwickParams {
         float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;
         float fq0 = 1.0f, fq1 = 0.0f, fq2 = 0.0f, fq3 = 0.0f;
         float beta = 0.1f;
-        float inv_sample_freq = 1.0f / 500.0f; // 500 Hz default
+        // [Removed] inv_sample_freq is removed, we use dt directly now
         float filter_alpha = 0.1f;
         float min_fusion_power = 0.05f;
         float max_fusion_power = 0.3f;
@@ -219,7 +230,7 @@ private:
 // -------------------------------------------------------
 // Gyroscope Bias Correction
 // -------------------------------------------------------
-
+// ... (Offset class remains unchanged) ...
 class Offset {
 public:
     void initialise(unsigned int sample_rate_hz) noexcept;

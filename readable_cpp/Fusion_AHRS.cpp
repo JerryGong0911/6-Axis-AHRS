@@ -34,6 +34,13 @@ void Ahrs::set_settings(const Settings& s) {
     }
 
     acceleration_recovery_timeout_ = s.recovery_trigger_period;
+
+    // If we are already done initializing, snap immediately to the new gain.
+    if (!is_initialising_) {
+        ramped_gain_ = settings_.gain;
+    }
+    // Recalculate the step size just in case settings.gain changed
+    ramped_gain_step_ = (kInitialGain - settings_.gain) / kInitializationPeriod;
 }
 
 void Ahrs::reset() {
@@ -44,6 +51,21 @@ void Ahrs::reset() {
     accelerometer_ignored_ = false;
     acceleration_recovery_trigger_ = 0;
     acceleration_recovery_timeout_ = settings_.recovery_trigger_period;
+
+    // [New] Reset Gain Ramping
+    ramped_gain_ = kInitialGain;
+    is_initialising_ = true;
+    ramped_gain_step_ = (kInitialGain - settings_.gain) / kInitializationPeriod;
+
+    // [Fix] Reset Madgwick Parameters
+    // This ensures internal states are clear when AHRS resets
+    madgwick_params_.q0 = 1.0f; madgwick_params_.q1 = 0.0f;
+    madgwick_params_.q2 = 0.0f; madgwick_params_.q3 = 0.0f;
+    madgwick_params_.fq0 = 1.0f; madgwick_params_.fq1 = 0.0f;
+    madgwick_params_.fq2 = 0.0f; madgwick_params_.fq3 = 0.0f;
+    // Reset momentum terms
+    madgwick_params_.v_s0 = 0.0f; madgwick_params_.v_s1 = 0.0f;
+    madgwick_params_.v_s2 = 0.0f; madgwick_params_.v_s3 = 0.0f;
 }
 
 Vector Ahrs::half_gravity() const noexcept {
@@ -86,6 +108,17 @@ void Ahrs::update(const Vector& gyro, const Vector& accel, float dt) {
         angular_rate_recovery_ = true;
     }
 
+    // [New] Gain Linear Decay Logic
+    if (is_initialising_) {
+        ramped_gain_ -= ramped_gain_step_ * dt;
+        
+        // Check if initialization period is over
+        if (ramped_gain_ < settings_.gain) {
+            ramped_gain_ = settings_.gain;
+            is_initialising_ = false;
+        }
+    }
+
     Vector half_accel_feedback = Vector::zero();
     Vector half_grav = half_gravity();
     accelerometer_ignored_ = true;
@@ -117,19 +150,19 @@ void Ahrs::update(const Vector& gyro, const Vector& accel, float dt) {
         }
     }
 
-    // Integrate: dq = 0.5 * q ? (¦Ø + gain * error) * dt
+    // Integrate: dq = 0.5 * q ? (w + gain * error) * dt
     float k = degrees_to_radians(0.5f);
     Vector adjusted_omega = {
-        gyro.x * k + half_accel_feedback.x * settings_.gain,
-        gyro.y * k + half_accel_feedback.y * settings_.gain,
-        gyro.z * k + half_accel_feedback.z * settings_.gain
+        gyro.x * k + half_accel_feedback.x * ramped_gain_,
+        gyro.y * k + half_accel_feedback.y * ramped_gain_,
+        gyro.z * k + half_accel_feedback.z * ramped_gain_
     };
 
     quaternion_ = (quaternion_ + (quaternion_ * adjusted_omega) * dt).normalized();
 
     // Gradient descent fusion
     if (use_gradient_descent_) {
-        madgwick_update_imu(gyro.x, gyro.y, gyro.z, accel.x, accel.y, accel.z);
+        madgwick_update_imu(gyro.x, gyro.y, gyro.z, accel.x, accel.y, accel.z, dt);
 
         float dot_product = quaternion_.w * madgwick_params_.q0 +
                             quaternion_.x * madgwick_params_.q1 +
@@ -167,9 +200,9 @@ void Ahrs::update(const Vector& gyro, const Vector& accel, float dt) {
     }
 }
 
-void Ahrs::madgwick_update_imu(float gx, float gy, float gz, float ax, float ay, float az) noexcept {
+void Ahrs::madgwick_update_imu(float gx, float gy, float gz, float ax, float ay, float az, float dt) noexcept {
     auto& p = madgwick_params_;
-    const float k = degrees_to_radians(1.0f); // deg/s ¡ú rad/s
+    const float k = degrees_to_radians(1.0f); // deg/s to rad/s
     gx *= k; gy *= k; gz *= k;
 
     float qDot1 = 0.5f * (-p.q1 * gx - p.q2 * gy - p.q3 * gz);
@@ -209,10 +242,10 @@ void Ahrs::madgwick_update_imu(float gx, float gy, float gz, float ax, float ay,
         qDot4 -= p.beta * s3;
     }
 
-    p.q0 += qDot1 * p.inv_sample_freq;
-    p.q1 += qDot2 * p.inv_sample_freq;
-    p.q2 += qDot3 * p.inv_sample_freq;
-    p.q3 += qDot4 * p.inv_sample_freq;
+    p.q0 += qDot1 * dt;
+    p.q1 += qDot2 * dt;
+    p.q2 += qDot3 * dt;
+    p.q3 += qDot4 * dt;
 
     float inv_norm = fast_inverse_sqrt(p.q0 * p.q0 + p.q1 * p.q1 + p.q2 * p.q2 + p.q3 * p.q3);
     p.q0 *= inv_norm; p.q1 *= inv_norm; p.q2 *= inv_norm; p.q3 *= inv_norm;
@@ -272,7 +305,7 @@ Ahrs::InternalStates Ahrs::get_internal_states() const noexcept {
     float error_deg = radians_to_degrees(safe_asin(2.0f * half_accelerometer_feedback_.magnitude()));
     float ratio = (settings_.recovery_trigger_period == 0) ? 0.0f :
                   static_cast<float>(acceleration_recovery_trigger_) / settings_.recovery_trigger_period;
-    return {error_deg, accelerometer_ignored_, ratio};
+    return {error_deg, accelerometer_ignored_, ratio, ramped_gain_, is_initialising_};
 }
 
 Ahrs::Flags Ahrs::get_flags() const noexcept {
