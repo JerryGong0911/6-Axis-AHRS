@@ -11,6 +11,8 @@
 [English Version](README.md)
 
 本库实现了一个增强型 **姿态与航向参考系统** （AHRS），适用于 6 自由度 IMU（加速度计 + 陀螺仪）。它基于  **Sebastian Madgwick 博士论文第 7 章** （[链接 ](https://x-io.co.uk/downloads/madgwick-phd-thesis.pdf)）所述算法，并引入了**自适应融合一个辅助的梯度下降** （Madgwick）。
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/76fd27b9-951c-40ff-86fb-ab450a4e4657" />
+
 
 ## 项目结构
 
